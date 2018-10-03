@@ -23,6 +23,8 @@ import android.widget.EditText
 import android.widget.RadioButton
 import android.widget.Toast
 import androidx.navigation.fragment.NavHostFragment
+import com.android.billingclient.api.*
+import com.android.billingclient.api.BillingClient.BillingResponse
 import kotlinx.android.synthetic.main.frag_app_list.*
 import org.jetbrains.anko.bundleOf
 import org.jetbrains.anko.defaultSharedPreferences
@@ -51,6 +53,8 @@ class AppListFragment : Fragment() {
     private val permissionRequestCode: Int by lazy {
         activityContext.resources.getString(R.string.permission_request_code).toInt()
     }
+
+    private lateinit var billingClient: BillingClient
 
     private lateinit var appList: List<App>
     private lateinit var appAdapter: AppListAdapter
@@ -93,7 +97,7 @@ class AppListFragment : Fragment() {
             activeSessions = it.second
             appAdapter = AppListAdapter(activityContext, appList, activeSessions)
             list_apps.adapter = appAdapter
-            setPulldownPromptVisibilityForAppList()
+            setPullDownPromptVisibilityForAppList()
         }
     }
 
@@ -107,6 +111,18 @@ class AppListFragment : Fragment() {
     private val filesystemObserver = Observer<List<Filesystem>> {
         it?.let {
             filesystemList = it
+        }
+    }
+
+    private val purchasesUpdatedListener = PurchasesUpdatedListener {
+        responseCode, purchases ->
+        when (responseCode) {
+            BillingResponse.OK -> {
+                purchases?.forEach {
+                    handlePurchase(it)
+                }
+            }
+            else -> return@PurchasesUpdatedListener // TODO we got some problems
         }
     }
 
@@ -142,6 +158,8 @@ class AppListFragment : Fragment() {
         appListViewModel.getRefreshStatus().observe(viewLifecycleOwner, refreshStatusObserver)
         appListViewModel.getAllFilesystems().observe(viewLifecycleOwner, filesystemObserver)
 
+        startBillingClient()
+
         registerForContextMenu(list_apps)
         list_apps.onItemClickListener = AdapterView.OnItemClickListener {
             parent, _, position, _ ->
@@ -160,9 +178,69 @@ class AppListFragment : Fragment() {
                 }
     }
 
+    private fun startBillingClient() {
+        billingClient = BillingClient.newBuilder(activityContext).setListener(purchasesUpdatedListener).build()
+        billingClient.startConnection(object : BillingClientStateListener {
+            override fun onBillingSetupFinished(responseCode: Int) {
+                when (responseCode) {
+                    BillingClient.BillingResponse.OK -> queryAppsSubscriptions()
+                    else -> return
+                }
+            }
+
+            override fun onBillingServiceDisconnected() {
+                // TODO retry and handle failure
+            }
+        })
+    }
+
+    private fun startBillingFlow() {
+        val flowParams = BillingFlowParams.newBuilder()
+                .setSku("apps_yearly_subscription")
+                .setType(BillingClient.SkuType.SUBS) // SkuType.SUB for subscription
+                .build()
+        val responseCode = billingClient.launchBillingFlow(activity, flowParams)
+        when (responseCode) {
+            // TODO response from flow, NOT the result of purchasing
+        }
+    }
+
+    private fun handlePurchase(purchase: Purchase) {
+        // TODO
+    }
+
+    private fun setPullDownPromptVisibilityForAppList() {
+        empty_apps_list.visibility = when (appList.isEmpty()) {
+            true -> View.VISIBLE
+            false -> View.INVISIBLE
+        }
+    }
+
+    private fun queryAppsSubscriptions() {
+        val skuList = listOf("apps_yearly_subscription")
+        val params = SkuDetailsParams.newBuilder()
+        params.setSkusList(skuList).setType(BillingClient.SkuType.SUBS)
+        billingClient.querySkuDetailsAsync(params.build()) {
+            responseCode, skuDetailsList ->
+            when(responseCode) {
+                BillingResponse.OK -> {
+                    skuDetailsList?.forEach {
+                        when (it.sku) {
+                            "apps_yearly_subscription" -> {
+                                // TODO APPS HAS BEEN PURCHASED
+                            }
+                            else -> return@querySkuDetailsAsync // TODO we got real problems
+                        }
+                    }
+                }
+                else -> return@querySkuDetailsAsync // TODO
+            }
+        }
+    }
+
     private fun doRefresh() {
         appListViewModel.refreshAppsList()
-        setPulldownPromptVisibilityForAppList()
+        setPullDownPromptVisibilityForAppList()
     }
 
     private fun doAppItemClicked(selectedApp: App) {
@@ -175,6 +253,11 @@ class AppListFragment : Fragment() {
     }
 
     private fun handleAppSelection(selectedApp: App) {
+        // TODO if paid and user hasn't paid and subscriptions are supported
+        if (selectedApp.isPaidApp) {
+            startBillingFlow()
+        }
+
         val preferredServiceType = appListViewModel.getAppServiceTypePreference(selectedApp).toLowerCase()
 
         if (activeSessions.isNotEmpty()) {
@@ -223,13 +306,6 @@ class AppListFragment : Fragment() {
                 .putExtra("app", selectedApp)
                 .putExtra("serviceType", preferredServiceType)
         activityContext.startService(startAppIntent)
-    }
-
-    private fun setPulldownPromptVisibilityForAppList() {
-        empty_apps_list.visibility = when (appList.isEmpty()) {
-            true -> View.VISIBLE
-            false -> View.INVISIBLE
-        }
     }
 
     override fun onCreateContextMenu(menu: ContextMenu, v: View, menuInfo: ContextMenu.ContextMenuInfo) {
